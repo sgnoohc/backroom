@@ -438,6 +438,9 @@ def write_timer_functions(
         "scoreboard objectives add runTime dummy",
         "scoreboard players add @a[tag=runner] runTime 1",
         f"execute if entity @a[tag=runner] run schedule function {namespace}:timer_tick 1t replace",
+        'title @a[tag=runner] actionbar {"text":"Time: "}',
+        'title @a[tag=runner] actionbar [{"text":"Time: "},{"score":{"name":"*","objective":"runTime"}},{"text":" ticks"}]',
+
     ]
     with open(tick_path, "w", encoding="utf-8") as f:
         f.write("\n".join(tick_lines))
