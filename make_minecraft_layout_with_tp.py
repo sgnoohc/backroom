@@ -19,38 +19,14 @@ def stamp_blob(grid: List[List[str]], r: int, c: int, radius: int, mark: str = '
             if in_bounds(n, rr, cc, margin=1) and max(abs(rr - r), abs(cc - c)) <= radius:
                 grid[rr][cc] = mark
 
-# def generate_open_layout_clustered(
-#     n: int, rng: random.Random, density: float = 0.12, cluster_radius: int = 1, walk_steps: int = 1
-# ) -> List[List[str]]:
-#     grid = [[' ' for _ in range(n)] for _ in range(n)]
-#     grid[1][0] = 'S'  # start on left border
-
-#     interior_area = (n - 2) * (n - 2)
-#     avg_blob = (2 * cluster_radius + 1) ** 2
-#     target = max(1, int(density * interior_area))
-#     seeds = max(1, int(target / max(1, avg_blob // 2)))
-
-#     for _ in range(seeds):
-#         r = rng.randint(1, n - 2)
-#         c = rng.randint(1, n - 2)
-#         for _ in range(walk_steps):
-#             stamp_blob(grid, r, c, cluster_radius, '#')
-#             r = max(1, min(n - 2, r + rng.choice([-1, 0, 1])))
-#             c = max(1, min(n - 2, c + rng.choice([-1, 0, 1])))
-
-#     # keep start clear
-#     grid[1][0] = 'S'
-#     # random exit on an open interior tile
-#     while True:
-#         rr = rng.randint(1, n - 2)
-#         cc = rng.randint(1, n - 2)
-#         if grid[rr][cc] == ' ':
-#             grid[rr][cc] = 'E'
-#             break
-#     return grid
-
 def generate_open_layout_clustered(
-    n: int, rng: random.Random, density: float = 0.12, cluster_radius: int = 1, walk_steps: int = 1
+    n: int,
+    rng: random.Random,
+    density: float = 0.12,
+    cluster_radius: int = 1,
+    walk_steps: int = 1,
+    min_exit_frac: float = 0.8,
+    min_exit_blocks: int = 0,
 ) -> List[List[str]]:
     grid = [[' ' for _ in range(n)] for _ in range(n)]
     start = (1, 0)   # start on left border
@@ -80,7 +56,11 @@ def generate_open_layout_clustered(
 
     # --- place exit at least 60% across the board from start (Chebyshev distance) ---
     def cheb(a, b): return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
-    dist_thresh = max(1, math.ceil(0.8 * (n - 2)))  # interior span is (n-2)
+    # Enforce BOTH a fractional and absolute minimum
+    dist_thresh = max(
+        1,
+        math.ceil(max(min_exit_frac * (n - 2), float(min_exit_blocks)))
+    )
 
     # open tiles that satisfy distance
     candidates = [(r, c) for r in range(1, n - 1) for c in range(1, n - 1)
@@ -102,6 +82,111 @@ def generate_open_layout_clustered(
     grid[er][ec] = 'E'
     return grid
 
+def generate_open_layout_mazeish(
+    n: int,
+    rng: random.Random,
+    min_exit_frac: float = 0.8,
+    extra_openings: int = None,
+    room_attempts: int = None,
+    room_radius_range: Tuple[int,int] = (1, 2),
+    min_exit_blocks: int = 0,
+) -> List[List[str]]:
+    """
+    Maze-first, then open up: 1-thick walls that naturally form ─, L, and T shapes,
+    with added loops and small rooms so it's not only tight hallways.
+
+    Legend: ' ' open, '#' wall, 'S' start (left border [1,0]), 'E' exit (≥ min_exit_frac across).
+    """
+    if n < 7:
+        raise ValueError("mazeish generation works best with n >= 7")
+
+    # 1) Start with all walls
+    grid = [['#' for _ in range(n)] for _ in range(n)]
+
+    # 2) Make maze cells at odd coordinates open
+    for r in range(1, n-1, 2):
+        for c in range(1, n-1, 2):
+            grid[r][c] = ' '
+
+    # 3) Randomized DFS/Backtracker over odd cells; carve 1-thick walls between cells
+    def neighbors_odd(rr, cc):
+        for dr, dc in ((-2,0),(2,0),(0,-2),(0,2)):
+            nr, nc = rr+dr, cc+dc
+            if 1 <= nr < n-1 and 1 <= nc < n-1:
+                yield nr, nc
+
+    start_cell = (1, 1)
+    stack = [start_cell]
+    seen = {start_cell}
+    while stack:
+        r, c = stack[-1]
+        nbrs = [(nr, nc) for (nr, nc) in neighbors_odd(r, c) if (nr, nc) not in seen]
+        if nbrs:
+            nr, nc = rng.choice(nbrs)
+            # carve wall between (r,c) and (nr,nc)
+            wr, wc = (r + nr)//2, (c + nc)//2
+            grid[wr][wc] = ' '
+            seen.add((nr, nc))
+            stack.append((nr, nc))
+        else:
+            stack.pop()
+
+    # 4) Add extra random openings to create loops and T/L junctions
+    if extra_openings is None:
+        extra_openings = max(2, n)        # heuristic
+    for _ in range(extra_openings):
+        rr = rng.randrange(1, n-1)
+        cc = rng.randrange(1, n-1)
+        # Only break walls that touch at least two opens (to bias T/L shapes)
+        if grid[rr][cc] == '#':
+            open_count = 0
+            for dr, dc in ((-1,0),(1,0),(0,-1),(0,1)):
+                r2, c2 = rr+dr, cc+dc
+                if 1 <= r2 < n-1 and 1 <= c2 < n-1 and grid[r2][c2] == ' ':
+                    open_count += 1
+            if open_count >= 1 and rng.random() < 0.9:
+                grid[rr][cc] = ' '
+
+    # 5) Carve a few small "rooms" (square/Chebyshev blobs) to soften the maze
+    if room_attempts is None:
+        room_attempts = max(1, n//2)
+    rmin, rmax = room_radius_range
+    rmin = max(1, rmin); rmax = max(rmin, rmax)
+    for _ in range(room_attempts):
+        rr = rng.randrange(2, n-2)
+        cc = rng.randrange(2, n-2)
+        rad = rng.randint(rmin, rmax)
+        for ar in range(rr-rad, rr+rad+1):
+            for ac in range(cc-rad, cc+rad+1):
+                if 1 <= ar < n-1 and 1 <= ac < n-1 and max(abs(ar-rr), abs(ac-cc)) <= rad:
+                    grid[ar][ac] = ' '
+
+    # 6) Start + Exit
+    grid[1][0] = 'S'      # left border
+    grid[1][1] = ' '      # ensure doorway into maze
+
+    # place exit far from start
+    start = (1, 0)
+    def cheb(a,b): return max(abs(a[0]-b[0]), abs(a[1]-b[1]))
+    thresh = max(
+        1,
+        math.ceil(max(min_exit_frac * (n - 2), float(min_exit_blocks)))
+    )
+
+    candidates = [(r,c) for r in range(1,n-1) for c in range(1,n-1)
+                  if grid[r][c] == ' ' and cheb((r,c), start) >= thresh]
+    if not candidates:
+        # fallback: farthest open tile
+        opens = [(r,c) for r in range(1,n-1) for c in range(1,n-1) if grid[r][c] == ' ']
+        if not opens:
+            opens = [(n-2, n-2)]
+            grid[n-2][n-2] = ' '
+        candidates = [max(opens, key=lambda p: cheb(p, start))]
+
+    er, ec = rng.choice(candidates)
+    grid[er][ec] = 'E'
+    return grid
+
 
 # ----------------- Helpers -----------------
 def mc_pos(origin_x: int, origin_y: int, origin_z: int, r: int, c: int) -> Tuple[int,int,int]:
@@ -118,6 +203,26 @@ def find_start(grid: List[List[str]]) -> Tuple[int,int]:
 def collect_open_tiles(grid: List[List[str]]) -> List[Tuple[int,int]]:
     n = len(grid)
     return [(r, c) for r in range(1, n-1) for c in range(1, n-1) if grid[r][c] == ' ']
+
+TILE = 181  # 181*181 = 32761 < 32768
+
+def tile_fill_plane(lines, x0, z0, x1, z1, y, block_id):
+    xi, xj = sorted((x0, x1))
+    zi, zj = sorted((z0, z1))
+    x = xi
+    while x <= xj:
+        xr = min(xj, x + TILE - 1)
+        z = zi
+        while z <= zj:
+            zr = min(zj, z + TILE - 1)
+            lines.append(f"fill {x} {y} {z} {xr} {y} {zr} {block_id}")
+            z = zr + 1
+        x = xr + 1
+
+def tile_clear_volume(lines, x0, z0, x1, z1, y_lo, y_hi, air_id="minecraft:air"):
+    # Clear per layer so each fill is still ≤ 181×181
+    for y in range(min(y_lo, y_hi), max(y_lo, y_hi) + 1):
+        tile_fill_plane(lines, x0, z0, x1, z1, y, air_id)
 
 # ----------------- Build function (no Warden summons here) -----------------
 def write_build_function(
@@ -153,12 +258,16 @@ def write_build_function(
     lines.append(f"# Walk height: {walk_height} (air {y_clear_lo}..{y_clear_hi}); Ceiling at {y_ceiling}")
     lines.append("# Floor: stripped oak; Perimeter & clusters: stripped birch; Ceiling: sea lanterns")
     lines.append("")
-    # Floor
-    lines.append(f"fill {x0} {y_floor} {z0} {x1} {y_floor} {z1} {OAK_FLOOR}")
-    # Ceiling
-    lines.append(f"fill {x0} {y_ceiling} {z0} {x1} {y_ceiling} {z1} {SEA_LANTERN}")
-    # Clear walk volume
-    lines.append(f"fill {x0} {y_clear_lo} {z0} {x1} {y_clear_hi} {z1} {AIR}")
+
+    # Floor (tiled)
+    tile_fill_plane(lines, x0, z0, x1, z1, y_floor, OAK_FLOOR)
+
+    # Ceiling (tiled)
+    tile_fill_plane(lines, x0, z0, x1, z1, y_ceiling, SEA_LANTERN)
+
+    # Clear walk volume (tiled per layer)
+    tile_clear_volume(lines, x0, z0, x1, z1, y_clear_lo, y_clear_hi, AIR)
+
 
     def column(x, z, y1, y2, block_id):
         lines.append(f"fill {x} {y1} {z} {x} {y2} {z} {block_id}")
@@ -271,23 +380,48 @@ def write_timer_functions(
     finish_plate_path: str,
     tp_selector: str,
     tp_coords: Tuple[int,int,int],
-    # warden spawns now happen in start_run:
     warden_world_positions: List[Tuple[int,int,int]],
-    warden_persist: bool
+    warden_persist: bool,
+    arena_box: Tuple[int,int,int,int,int,int],   # <— NEW
 ) -> None:
     sx, sy, sz = tp_coords
     nbt = "{PersistenceRequired:1b}" if warden_persist else ""
 
     # start_run: TP players, tag runners, zero time, schedule ticking, SUMMON WARDENS
+    # start_lines = [
+    #     "# Start a timed run: TP players, tag as runners, summon Wardens, start ticking",
+    #     "scoreboard objectives add runTime dummy",
+    #     f"tag {tp_selector} add runner",
+    #     f"scoreboard players set {tp_selector} runTime 0",
+    #     f"fill {sx} {sy} {sz} {sx} {sy+1} {sz} minecraft:air",
+    #     f"tp {tp_selector} {sx} {sy} {sz}",
+    #     f"kill @e[type=minecraft:warden]",
+    # ]
     start_lines = [
-        "# Start a timed run: TP players, tag as runners, summon Wardens, start ticking",
-        "scoreboard objectives add runTime dummy",
-        f"tag {tp_selector} add runner",
-        f"scoreboard players set {tp_selector} runTime 0",
-        f"fill {sx} {sy} {sz} {sx} {sy+1} {sz} minecraft:air",
-        f"tp {tp_selector} {sx} {sy} {sz}",
-        f"kill @e[type=minecraft:warden]",
-    ]
+            "# Start a timed run: rebuild arena, TP players, tag as runners, summon Wardens, start ticking",
+            # Rebuild the arena first
+            f"function {namespace}:clear_area",
+            f"function {namespace}:build_layout",
+
+            # Reset/kick old wardens just in case
+            "kill @e[type=minecraft:warden]",
+
+            # Timer setup + TP
+            "scoreboard objectives add runTime dummy",
+            f"tag {tp_selector} add runner",
+            f"scoreboard players set {tp_selector} runTime 0",
+            ]
+    for i in range(5):
+        for j in range(3):
+            for k in range(3):
+                start_lines += [
+                            f"fill {sx} {sy} {sz} {sx+i} {sy+j} {sz+k} minecraft:air",
+                        ]
+    start_lines += [
+            "kill @e[type=minecraft:item]",
+            f"tp {tp_selector} {sx} {sy} {sz}",
+        ]
+
     # Summon Wardens now (ensure spawn spots are clear)
     for (wx, wy, wz) in warden_world_positions:
         start_lines.append(f"setblock {wx} {wy} {wz} minecraft:air")
@@ -309,16 +443,29 @@ def write_timer_functions(
         f.write("\n".join(tick_lines))
 
     # finish_plate: called by the command block at exit
+    x0, y0, z0, x1, y1, z1 = arena_box
+
     finish_lines = [
         "# Finish triggered by exit plate",
         "scoreboard objectives add runTime dummy",
         'tellraw @s [{"text":"Finished! Time: ","color":"yellow"},'
         '{"score":{"name":"*","objective":"runTime"}},{"text":" ticks (~","color":"gray"},'
         '{"text":"seconds = ticks/20","color":"gray"},{"text":")"}]',
+        # stop timer and wipe runners
         "tag @a remove runner",
         "scoreboard players reset @a runTime",
-        "kill @e[type=minecraft:warden]"
+        # remove Wardens
+        "kill @e[type=minecraft:warden]",
+        # remove dropped sculk catalyst items
+        'kill @e[type=minecraft:item,nbt={Item:{id:"minecraft:sculk_catalyst"}}]',
+        # scrub placed sculk family blocks in the arena prism
+        f"fill {x0} {y0} {z0} {x1} {y1} {z1} air replace minecraft:sculk",
+        f"fill {x0} {y0} {z0} {x1} {y1} {z1} air replace minecraft:sculk_vein",
+        f"fill {x0} {y0} {z0} {x1} {y1} {z1} air replace minecraft:sculk_catalyst",
+        f"fill {x0} {y0} {z0} {x1} {y1} {z1} air replace minecraft:sculk_sensor",
+        f"fill {x0} {y0} {z0} {x1} {y1} {z1} air replace minecraft:sculk_shrieker",
     ]
+
     with open(finish_plate_path, "w", encoding="utf-8") as f:
         f.write("\n".join(finish_lines))
 
@@ -330,6 +477,12 @@ def print_grid(grid: List[List[str]]) -> None:
 def main():
     p = argparse.ArgumentParser(description="Emit build, tp, clear, and timer mcfunctions with a plate-finish exit; Wardens spawn on start_run.")
     p.add_argument("-n", "--size", type=int, required=True, help="grid size n (n x n)")
+    p.add_argument("--gen", choices=["clustered", "mazeish"], default="clustered",
+               help="which layout generator to use")
+    p.add_argument("--min-exit-frac", type=float, default=1.0,
+               help="minimum exit distance as a fraction of interior span (Chebyshev)")
+    p.add_argument("--min-exit-blocks", type=int, default=0,
+               help="absolute minimum Chebyshev distance (in blocks) between S and E")
     p.add_argument("--seed", type=int, default=None, help="random seed")
     p.add_argument("--density", type=float, default=0.12, help="cluster coverage (approx)")
     p.add_argument("--cluster-radius", type=int, default=1, help="blob radius (0=1x1, 1≈3x3, 2≈5x5...)")
@@ -380,10 +533,24 @@ def main():
         raise SystemExit("--clear-height must be >= 1")
 
     rng = random.Random(args.seed)
-    grid = generate_open_layout_clustered(
-        args.size, rng, density=args.density,
-        cluster_radius=args.cluster_radius, walk_steps=args.walk_steps
-    )
+
+    if args.gen == "mazeish":
+        grid = generate_open_layout_mazeish(
+                args.size, rng,
+                min_exit_frac=args.min_exit_frac,
+                extra_openings=2,
+                room_attempts=2800,
+                min_exit_blocks=args.min_exit_blocks,
+
+                )
+    else:
+        grid = generate_open_layout_clustered(
+            args.size, rng,
+            density=args.density,
+            cluster_radius=args.cluster_radius,
+            walk_steps=args.walk_steps,
+            min_exit_blocks=args.min_exit_blocks,
+            )
 
     print_grid(grid)
 
@@ -413,6 +580,10 @@ def main():
             wx, _, wz = mc_pos(ox, oy, oz, rr, cc)
             warden_world_positions.append((wx, wy, wz))
 
+    x0, y0, z0 = ox, oy, oz
+    x1, y1, z1 = ox + args.size - 1, oy + args.clear_height - 1, oz + args.size - 1
+    arena_box = (x0, y0, z0, x1, y1, z1)
+
     # Timer-related functions (start_run summons Wardens)
     write_timer_functions(
         args.namespace,
@@ -422,8 +593,10 @@ def main():
         args.tp_selector,
         tp_coords,
         warden_world_positions,
-        args.warden_persist
+        args.warden_persist,
+        arena_box,
     )
+
 
     print(f"Wrote: {args.out_build}, {args.out_tp}, {args.out_clear}, {args.out_start_run}, {args.out_timer_tick}, {args.out_finish_plate}")
     print("Place them in data/<namespace>/functions/, then:")
