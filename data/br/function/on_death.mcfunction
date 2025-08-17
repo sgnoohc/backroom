@@ -15,7 +15,7 @@ execute unless entity @a[tag=runner] run schedule clear br:timer_tick
 title @s actionbar {"text":"You died — DNF","color":"red"}
 
 gamemode spectator @s
-tp 101 203 101
+tp @s 101 203 101
 title @s actionbar {"text":"You died → Spectator mode","color":"gray"}
 
 # Mark visually as DEAD in the sidebar
