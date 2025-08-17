@@ -648,12 +648,12 @@ def write_build_function(
 
     lines.append("# doorway")
 
-    # Ensure start doorway clear
-    for r in range(n):
-        for c in range(n):
-            if grid[r][c] == 'S':
-                x, _, z = mc_pos(origin_x, origin_y, origin_z, r, c)
-                lines.append(f"fill {x} {y_clear_lo} {z} {x} {y_clear_hi} {z} {AIR}")
+    # # Ensure start doorway clear
+    # for r in range(n):
+    #     for c in range(n):
+    #         if grid[r][c] == 'S':
+    #             x, _, z = mc_pos(origin_x, origin_y, origin_z, r, c)
+    #             lines.append(f"fill {x} {y_clear_lo} {z} {x} {y_clear_hi} {z} {AIR}")
 
     # Exit command block + plate
     for r in range(n):
@@ -739,6 +739,7 @@ def write_timer_functions(
         f"function {namespace}:build_layout",
         "kill @e[type=minecraft:warden]",
         "scoreboard objectives add runTime dummy",
+        'scoreboard objectives modify runTime displayname {"text":"Run Time (ticks)"}',
         f"tag {tp_selector} add runner",
         f"scoreboard players set {tp_selector} runTime 0",
     ]
@@ -750,7 +751,14 @@ def write_timer_functions(
     start_lines += [
         "kill @e[type=minecraft:item]",
         f"tp {tp_selector} {sx} {sy} {sz}",
-        "gamemode adventure @s",
+        "gamemode adventure @a[tag=runner]",
+        '# reset everyone’s visible score so only runners show',
+        'scoreboard players reset @a[tag=runner] runTime',
+        'scoreboard players set @a[tag=runner] runTime 0',
+        '# show the timer on the sidebar (choose sort order)',
+        'scoreboard objectives setdisplay sidebar runTime',
+        'team leave @a[tag=runner]',
+        # "team join alive @a[tag=runner]   # optional—only if you want an 'alive' team",
     ]
     for (wx, wy, wz) in warden_world_positions:
         start_lines.append(f"setblock {wx} {wy} {wz} minecraft:air")
@@ -933,7 +941,7 @@ def main():
     p.add_argument("--warden-persist", action="store_true", help="Wardens get {PersistenceRequired:1b}")
 
     # Outputs & namespace
-    p.add_argument("--namespace", type=str, default="build", help="datapack namespace")
+    p.add_argument("--namespace", type=str, default="br", help="datapack namespace")
     p.add_argument("--out-build", type=str, default="build_layout.mcfunction", help="output for building the arena")
     p.add_argument("--out-tp", type=str, default="tp_start.mcfunction", help="output for teleporting to start")
     p.add_argument("--out-clear", type=str, default="clear_area.mcfunction", help="output for clearing the n×n×height volume")
